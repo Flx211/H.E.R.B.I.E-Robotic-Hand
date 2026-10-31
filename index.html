@@ -32,7 +32,12 @@
             margin-bottom: 10px;
             font-weight: 500;
         }
-        #bt-btn {
+        .btn-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .action-btn {
             background-color: #ffbb00;
             color: #000;
             font-family: 'Orbitron', sans-serif;
@@ -41,7 +46,6 @@
             border-radius: 8px;
             border: none;
             cursor: pointer;
-            margin-bottom: 15px;
             box-shadow: 0 4px 10px rgba(0,0,0,0.3);
         }
         #container {
@@ -62,7 +66,10 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1); /* Mirror view */
+        }
+        /* Mirror view only for the front/user facing camera */
+        .mirror {
+            transform: scaleX(-1);
         }
         #status {
             font-size: 18px;
@@ -78,11 +85,15 @@
     <h1 style="font-size:40px;">Robotic Hand App </h1>
     <p>H.E.R.B.I.E INC | Coral Gables Senior Highschool | 2026-2027 </p>
     <br>
-    <button id="bt-btn">Connect to the Robotic Hand</button>
+
+    <div class="btn-controls">
+        <button id="bt-btn" class="action-btn">Connect to the Robotic Hand</button>
+        <button id="switch-cam-btn" class="action-btn">Switch Camera</button>
+    </div>
 
     <div id="container">
-        <video id="webcam" autoplay playsinline muted></video>
-        <canvas id="output_canvas"></canvas>
+        <video id="webcam" class="mirror" autoplay playsinline muted></video>
+        <canvas id="output_canvas" class="mirror"></canvas>
     </div>
     
     <div id="status">Loading J.A.R.V.I.S scanning protocol...</div>
@@ -95,11 +106,16 @@
         const canvasCtx = canvasElement.getContext("2d");
         const statusDiv = document.getElementById("status");
         const btBtn = document.getElementById("bt-btn");
+        const switchCamBtn = document.getElementById("switch-cam-btn");
 
         let handLandmarker = undefined;
         let lastVideoTime = -1;
         let bleCharacteristic = null;
         let lastSentCommand = "";
+        
+        // Track facing mode: "user" (front) or "environment" (rear)
+        let currentFacingMode = "user";
+        let animationFrameId = null;
 
         btBtn.addEventListener("click", async () => {
             try {
@@ -118,6 +134,24 @@
             } catch (error) {
                 console.error("Bluetooth error:", error);
                 btBtn.innerText = "Connection Failed (Retry)";
+            }
+        });
+
+        // Switch camera button listener
+        switchCamBtn.addEventListener("click", () => {
+            currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
+            
+            // Toggle CSS mirroring (front camera looks mirrored, rear camera does not)
+            if (currentFacingMode === "user") {
+                video.classList.add("mirror");
+                canvasElement.classList.add("mirror");
+            } else {
+                video.classList.remove("mirror");
+                canvasElement.classList.remove("mirror");
+            }
+
+            if (video.srcObject) {
+                startWebcam();
             }
         });
 
@@ -154,7 +188,7 @@
         createHandLandmarker();
 
         document.body.addEventListener("click", (e) => {
-            if (e.target === btBtn) return; 
+            if (e.target === btBtn || e.target === switchCamBtn) return; 
             if (!video.srcObject && handLandmarker) {
                 startWebcam();
             }
@@ -162,17 +196,27 @@
 
         function startWebcam() {
             statusDiv.innerText = "Scanning Surroundings...";
+
+            // Stop active camera tracks when switching cameras
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+            }
+
             navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: "user" } 
+                video: { facingMode: currentFacingMode } 
             }).then((stream) => {
                 video.srcObject = stream;
-                video.addEventListener("loadeddata", () => {
+                video.onloadedmetadata = () => {
                     canvasElement.width = video.videoWidth;
                     canvasElement.height = video.videoHeight;
+                    
+                    if (animationFrameId) {
+                        cancelAnimationFrame(animationFrameId);
+                    }
                     predictWebcam();
-                });
+                };
             }).catch((err) => {
-                statusDiv.innerText = "Camera access denied.";
+                statusDiv.innerText = "Camera access denied or device unavailable.";
                 console.error(err);
             });
         }
@@ -212,7 +256,7 @@
                     statusDiv.style.color = "#aaaaaa";
                 }
             }
-            window.requestAnimationFrame(predictWebcam);
+            animationFrameId = window.requestAnimationFrame(predictWebcam);
         }
 
         function drawConnectors(ctx, landmarks) {
