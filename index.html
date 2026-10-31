@@ -67,7 +67,6 @@
             height: 100%;
             object-fit: cover;
         }
-        /* Mirror view only for the front/user facing camera */
         .mirror {
             transform: scaleX(-1);
         }
@@ -113,9 +112,9 @@
         let bleCharacteristic = null;
         let lastSentCommand = "";
         
-        // Track facing mode: "user" (front) or "environment" (rear)
         let currentFacingMode = "user";
         let animationFrameId = null;
+        let isCameraRunning = false;
 
         btBtn.addEventListener("click", async () => {
             try {
@@ -137,11 +136,10 @@
             }
         });
 
-        // Switch camera button listener
-        switchCamBtn.addEventListener("click", () => {
+        switchCamBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
             currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
             
-            // Toggle CSS mirroring (front camera looks mirrored, rear camera does not)
             if (currentFacingMode === "user") {
                 video.classList.add("mirror");
                 canvasElement.classList.add("mirror");
@@ -150,7 +148,7 @@
                 canvasElement.classList.remove("mirror");
             }
 
-            if (video.srcObject) {
+            if (isCameraRunning) {
                 startWebcam();
             }
         });
@@ -179,7 +177,7 @@
                     runningMode: "VIDEO",
                     numHands: 1
                 });
-                statusDiv.innerText = "J.A.R.V.I.S has loaded correctly. Tap to Start Camera.";
+                statusDiv.innerText = "J.A.R.V.I.S has loaded correctly. Tap anywhere to Start Camera.";
             } catch (error) {
                 statusDiv.innerText = "Error loading J.A.R.V.I.S";
                 console.error(error);
@@ -189,71 +187,89 @@
 
         document.body.addEventListener("click", (e) => {
             if (e.target === btBtn || e.target === switchCamBtn) return; 
-            if (!video.srcObject && handLandmarker) {
+            if (!isCameraRunning && handLandmarker) {
                 startWebcam();
             }
         });
 
         function startWebcam() {
-            statusDiv.innerText = "Scanning Surroundings...";
+            statusDiv.innerText = "Switching/Scanning Surroundings...";
+            isCameraRunning = true;
 
-            // Stop active camera tracks when switching cameras
+            // Stop any ongoing animation loop
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+
+            // Stop active tracks
             if (video.srcObject) {
                 video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
             }
 
             navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: currentFacingMode } 
+                video: { 
+                    facingMode: currentFacingMode,
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                } 
             }).then((stream) => {
                 video.srcObject = stream;
+                
                 video.onloadedmetadata = () => {
-                    canvasElement.width = video.videoWidth;
-                    canvasElement.height = video.videoHeight;
-                    
-                    if (animationFrameId) {
-                        cancelAnimationFrame(animationFrameId);
-                    }
+                    video.play();
+                    canvasElement.width = video.videoWidth || video.clientWidth;
+                    canvasElement.height = video.videoHeight || video.clientHeight;
+                    lastVideoTime = -1; // Reset frame tracker to sync MediaPipe
                     predictWebcam();
                 };
             }).catch((err) => {
                 statusDiv.innerText = "Camera access denied or device unavailable.";
+                isCameraRunning = false;
                 console.error(err);
             });
         }
 
         async function predictWebcam() {
+            if (!isCameraRunning) return;
+
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-            if (handLandmarker && video.currentTime !== lastVideoTime) {
+            if (handLandmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
                 lastVideoTime = video.currentTime;
-                const results = handLandmarker.detectForVideo(video, performance.now());
+                try {
+                    const results = handLandmarker.detectForVideo(video, performance.now());
 
-                if (results.landmarks && results.landmarks.length > 0) {
-                    const landmarks = results.landmarks[0];
-                    drawConnectors(canvasCtx, landmarks);
+                    if (results.landmarks && results.landmarks.length > 0) {
+                        const landmarks = results.landmarks[0];
+                        drawConnectors(canvasCtx, landmarks);
 
-                    const tips = [8, 12, 16, 20];
-                    const pips = [6, 10, 14, 18];
-                    let closedCount = 0;
+                        const tips = [8, 12, 16, 20];
+                        const pips = [6, 10, 14, 18];
+                        let closedCount = 0;
 
-                    for (let i = 0; i < 4; i++) {
-                        if (landmarks[tips[i]].y > landmarks[pips[i]].y) {
-                            closedCount++;
+                        for (let i = 0; i < 4; i++) {
+                            if (landmarks[tips[i]].y > landmarks[pips[i]].y) {
+                                closedCount++;
+                            }
                         }
-                    }
 
-                    if (closedCount >= 3) {
-                        statusDiv.innerText = "Closed Hand";
-                        statusDiv.style.color = "#aaaaaa";
-                        sendBluetoothCommand("0"); // Sends "0" when closed
+                        if (closedCount >= 3) {
+                            statusDiv.innerText = "Closed Hand";
+                            statusDiv.style.color = "#aaaaaa";
+                            sendBluetoothCommand("0");
+                        } else {
+                            statusDiv.innerText = "Open Hand";
+                            statusDiv.style.color = "#00ffcc";
+                            sendBluetoothCommand("1");
+                        }
                     } else {
-                        statusDiv.innerText = "Open Hand";
-                        statusDiv.style.color = "#00ffcc";
-                        sendBluetoothCommand("1"); // Sends "1" when open
+                        statusDiv.innerText = "No hand detected";
+                        statusDiv.style.color = "#aaaaaa";
                     }
-                } else {
-                    statusDiv.innerText = "No hand detected";
-                    statusDiv.style.color = "#aaaaaa";
+                } catch (e) {
+                    console.error("Detection frame error:", e);
                 }
             }
             animationFrameId = window.requestAnimationFrame(predictWebcam);
